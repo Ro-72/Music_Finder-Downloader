@@ -79,7 +79,7 @@ def main():
     st.write("Carga un archivo JSON con información de canciones para encontrar enlaces de YouTube o descargar MP3")
     
     # Tabs para diferentes funcionalidades
-    tab1, tab2 = st.tabs(["🔍 Buscar Enlaces", "⬇️ Descargar MP3"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🔍 Buscar Enlaces", "⬇️ Descargar MP3", "📋 Descarga Masiva", "📹 Descargar Video"])
     
     with tab1:
         st.header("Buscar Enlaces de YouTube")
@@ -385,6 +385,528 @@ def main():
             except Exception as e:
                 st.error(f"❌ Error procesando el archivo: {str(e)}")
     
+    with tab3:
+        st.header("Descarga Masiva de Enlaces")
+        st.write("Pega enlaces de YouTube directamente para descargar en lote")
+        
+        # FFmpeg check for bulk download
+        ffmpeg_installed = check_ffmpeg()
+        if not ffmpeg_installed:
+            st.error("❌ FFmpeg no está instalado")
+            st.info("💡 **Alternativa:** Puedes descargar como audio sin convertir a MP3")
+            use_alternative_bulk = st.checkbox("Usar descarga alternativa (sin MP3)", key="bulk_alt")
+        else:
+            st.success("✅ FFmpeg detectado correctamente")
+            use_alternative_bulk = False
+        
+        # Text area for pasting links
+        st.subheader("📝 Enlaces de YouTube")
+        links_text = st.text_area(
+            "Pega los enlaces aquí (uno por línea):",
+            height=200,
+            placeholder="https://www.youtube.com/watch?v=dQw4w9WgXcQ\nhttps://www.youtube.com/watch?v=...\nhttps://www.youtube.com/watch?v=...",
+            key="bulk_links"
+        )
+        
+        # Process links
+        if links_text:
+            # Parse links
+            raw_links = [link.strip() for link in links_text.split('\n') if link.strip()]
+            valid_links = []
+            
+            for link in raw_links:
+                if 'youtube.com/watch?v=' in link or 'youtu.be/' in link:
+                    # Normalize YouTube links
+                    if 'youtu.be/' in link:
+                        video_id = link.split('youtu.be/')[-1].split('?')[0]
+                        normalized_link = f"https://www.youtube.com/watch?v={video_id}"
+                    else:
+                        normalized_link = link
+                    valid_links.append(normalized_link)
+            
+            st.success(f"Enlaces válidos encontrados: {len(valid_links)}")
+            
+            if valid_links:
+                with st.expander("Vista previa de enlaces"):
+                    for i, link in enumerate(valid_links[:10], 1):
+                        st.write(f"{i}. {link}")
+                    if len(valid_links) > 10:
+                        st.write(f"... y {len(valid_links) - 10} más")
+        
+        # Folder selection for bulk download
+        st.subheader("📁 Seleccionar carpeta de destino")
+        default_path_bulk = str(Path.home() / "Downloads" / "Music" / "Bulk")
+        download_path_bulk = st.text_input("Ruta de descarga:", value=default_path_bulk, key="bulk_path")
+        
+        # Create folder if it doesn't exist
+        if download_path_bulk:
+            try:
+                os.makedirs(download_path_bulk, exist_ok=True)
+                st.success(f"✅ Carpeta: {download_path_bulk}")
+            except Exception as e:
+                st.error(f"❌ Error creando carpeta: {str(e)}")
+                download_path_bulk = None
+        
+        # Bulk download options
+        if links_text and valid_links and download_path_bulk:
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if ffmpeg_installed and not use_alternative_bulk:
+                    quality_bulk = st.selectbox("Calidad de audio:", ["192", "128", "320"], index=0, key="bulk_quality")
+                    format_type_bulk = "MP3"
+                else:
+                    quality_bulk = st.selectbox("Calidad de audio:", ["best", "worst"], index=0, key="bulk_quality_alt")
+                    format_type_bulk = "Audio original"
+            
+            with col2:
+                max_downloads_bulk = st.number_input(
+                    "Máximo de descargas:", 
+                    min_value=1, 
+                    max_value=len(valid_links), 
+                    value=min(len(valid_links), 20),
+                    key="bulk_max"
+                )
+            
+            with col3:
+                # Naming options
+                naming_option = st.selectbox(
+                    "Formato de nombre:",
+                    ["Título del video", "Numerado secuencial"],
+                    key="bulk_naming"
+                )
+            
+            st.info(f"📥 Formato de descarga: {format_type_bulk}")
+            
+            # Start bulk download
+            download_button_text_bulk = "⬇️ Iniciar descarga masiva MP3" if (ffmpeg_installed and not use_alternative_bulk) else "⬇️ Iniciar descarga masiva Audio"
+            
+            if st.button(download_button_text_bulk):
+                if not valid_links:
+                    st.error("❌ No hay enlaces válidos para descargar")
+                    return
+                
+                bulk_progress = st.progress(0)
+                bulk_status = st.empty()
+                
+                successful_bulk = 0
+                failed_bulk = 0
+                
+                links_to_download = valid_links[:max_downloads_bulk]
+                
+                for i, youtube_link in enumerate(links_to_download):
+                    try:
+                        bulk_status.text(f"Descargando {i+1}/{len(links_to_download)}: {youtube_link}")
+                        
+                        # Configure filename based on naming option
+                        if naming_option == "Numerado secuencial":
+                            filename_template = f"{i+1:03d}_%(title)s.%(ext)s"
+                        else:
+                            filename_template = "%(title)s.%(ext)s"
+                        
+                        # Configure yt-dlp for bulk download
+                        if ffmpeg_installed and not use_alternative_bulk:
+                            # MP3 configuration with FFmpeg
+                            ydl_opts_bulk = {
+                                'format': 'bestaudio/best',
+                                'outtmpl': os.path.join(download_path_bulk, filename_template),
+                                'postprocessors': [{
+                                    'key': 'FFmpegExtractAudio',
+                                    'preferredcodec': 'mp3',
+                                    'preferredquality': quality_bulk,
+                                }],
+                                'quiet': True,
+                                'no_warnings': True,
+                            }
+                        else:
+                            # Configuration without FFmpeg (original audio)
+                            ydl_opts_bulk = {
+                                'format': f'bestaudio[ext=m4a]/bestaudio/best' if quality_bulk == 'best' else 'worstaudio',
+                                'outtmpl': os.path.join(download_path_bulk, filename_template),
+                                'quiet': True,
+                                'no_warnings': True,
+                            }
+                        
+                        with yt_dlp.YoutubeDL(ydl_opts_bulk) as ydl:
+                            ydl.download([youtube_link])
+                            successful_bulk += 1
+                            
+                    except Exception as e:
+                        failed_bulk += 1
+                        st.error(f"❌ Error descargando {youtube_link}: {str(e)}")
+                    
+                    # Update progress
+                    progress_bulk = (i + 1) / len(links_to_download)
+                    bulk_progress.progress(progress_bulk)
+                
+                # Show final results
+                bulk_status.text("✅ Descarga masiva completada!")
+                
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Exitosas", successful_bulk)
+                col2.metric("Fallidas", failed_bulk)
+                col3.metric("Total", len(links_to_download))
+                
+                st.success(f"🎵 Descarga masiva completada en: {download_path_bulk}")
+                
+                if not ffmpeg_installed or use_alternative_bulk:
+                    st.info("""
+                    📝 **Nota:** Los archivos se descargaron en formato de audio original.
+                    Para convertir a MP3, instala FFmpeg y usa la descarga normal.
+                    """)
+    
+    with tab4:
+        st.header("📹 Descargar Videos de YouTube")
+        st.write("Descarga videos de YouTube en diferentes calidades y formatos")
+        
+        # Input methods
+        input_method = st.radio(
+            "Método de entrada:",
+            ["📝 Enlaces individuales", "📋 Enlaces múltiples"],
+            key="video_input_method"
+        )
+        
+        video_urls = []
+        
+        if input_method == "📝 Enlaces individuales":
+            # Single URL input
+            single_url = st.text_input(
+                "Enlace de YouTube:",
+                placeholder="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                key="single_video_url"
+            )
+            if single_url and ('youtube.com/watch?v=' in single_url or 'youtu.be/' in single_url):
+                # Normalize URL
+                if 'youtu.be/' in single_url:
+                    video_id = single_url.split('youtu.be/')[-1].split('?')[0]
+                    normalized_url = f"https://www.youtube.com/watch?v={video_id}"
+                else:
+                    normalized_url = single_url
+                video_urls = [normalized_url]
+                st.success("✅ Enlace válido")
+        else:
+            # Multiple URLs input
+            multi_urls_text = st.text_area(
+                "Enlaces de YouTube (uno por línea):",
+                height=150,
+                placeholder="https://www.youtube.com/watch?v=dQw4w9WgXcQ\nhttps://www.youtube.com/watch?v=...",
+                key="multi_video_urls"
+            )
+            
+            if multi_urls_text:
+                raw_urls = [url.strip() for url in multi_urls_text.split('\n') if url.strip()]
+                for url in raw_urls:
+                    if 'youtube.com/watch?v=' in url or 'youtu.be/' in url:
+                        if 'youtu.be/' in url:
+                            video_id = url.split('youtu.be/')[-1].split('?')[0]
+                            normalized_url = f"https://www.youtube.com/watch?v={video_id}"
+                        else:
+                            normalized_url = url
+                        video_urls.append(normalized_url)
+                
+                if video_urls:
+                    st.success(f"✅ {len(video_urls)} enlaces válidos encontrados")
+        
+        # Show video info and quality options if URLs are provided
+        if video_urls:
+            # Folder selection
+            st.subheader("📁 Configuración de descarga")
+            default_video_path = str(Path.home() / "Downloads" / "Videos")
+            download_video_path = st.text_input("Carpeta de destino:", value=default_video_path, key="video_path")
+            
+            if download_video_path:
+                try:
+                    os.makedirs(download_video_path, exist_ok=True)
+                    st.success(f"✅ Carpeta: {download_video_path}")
+                except Exception as e:
+                    st.error(f"❌ Error creando carpeta: {str(e)}")
+                    download_video_path = None
+            
+            if download_video_path:
+                # Get video info for quality selection (use first video as reference)
+                if st.button("🔍 Obtener información de calidades disponibles", key="get_video_info"):
+                    try:
+                        with st.spinner("Obteniendo información del video..."):
+                            ydl_opts = {
+                                'quiet': True,
+                                'no_warnings': True,
+                            }
+                            
+                            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                                info = ydl.extract_info(video_urls[0], download=False)
+                                
+                                # Show video title
+                                st.subheader(f"📹 {info.get('title', 'Título no disponible')}")
+                                st.write(f"**Canal:** {info.get('uploader', 'N/A')}")
+                                st.write(f"**Duración:** {info.get('duration', 0) // 60}:{info.get('duration', 0) % 60:02d}")
+                                
+                                # Process formats
+                                formats = info.get('formats', [])
+                                
+                                # Video + Audio formats
+                                video_audio_formats = []
+                                video_only_formats = []
+                                audio_only_formats = []
+                                
+                                for fmt in formats:
+                                    if fmt.get('vcodec') != 'none' and fmt.get('acodec') != 'none':
+                                        # Video + Audio
+                                        height = fmt.get('height', 0)
+                                        fps = fmt.get('fps', 0)
+                                        ext = fmt.get('ext', 'unknown')
+                                        filesize = fmt.get('filesize') or fmt.get('filesize_approx', 0)
+                                        size_mb = f"{filesize / (1024*1024):.1f} MB" if filesize else "Tamaño desconocido"
+                                        
+                                        if height:
+                                            format_desc = f"{height}p"
+                                            if fps and fps > 30:
+                                                format_desc += f" {fps}fps"
+                                            format_desc += f" ({ext}) - {size_mb}"
+                                            
+                                            video_audio_formats.append({
+                                                'format_id': fmt['format_id'],
+                                                'description': format_desc,
+                                                'height': height,
+                                                'ext': ext
+                                            })
+                                    
+                                    elif fmt.get('vcodec') != 'none' and fmt.get('acodec') == 'none':
+                                        # Video only
+                                        height = fmt.get('height', 0)
+                                        fps = fmt.get('fps', 0)
+                                        ext = fmt.get('ext', 'unknown')
+                                        
+                                        if height:
+                                            format_desc = f"{height}p"
+                                            if fps and fps > 30:
+                                                format_desc += f" {fps}fps"
+                                            format_desc += f" ({ext}) - Solo video"
+                                            
+                                            video_only_formats.append({
+                                                'format_id': fmt['format_id'],
+                                                'description': format_desc,
+                                                'height': height
+                                            })
+                                    
+                                    elif fmt.get('acodec') != 'none' and fmt.get('vcodec') == 'none':
+                                        # Audio only
+                                        abr = fmt.get('abr', 0)
+                                        ext = fmt.get('ext', 'unknown')
+                                        
+                                        if abr:
+                                            format_desc = f"{abr}kbps ({ext}) - Solo audio"
+                                            audio_only_formats.append({
+                                                'format_id': fmt['format_id'],
+                                                'description': format_desc,
+                                                'abr': abr
+                                            })
+                                
+                                # Sort formats
+                                video_audio_formats.sort(key=lambda x: x['height'], reverse=True)
+                                video_only_formats.sort(key=lambda x: x['height'], reverse=True)
+                                audio_only_formats.sort(key=lambda x: x['abr'], reverse=True)
+                                
+                                # Display format options
+                                st.subheader("🎯 Seleccionar formato de descarga")
+                                
+                                download_type = st.radio(
+                                    "Tipo de descarga:",
+                                    ["📹 Video + Audio", "🎬 Solo Video", "🎵 Solo Audio", "🔧 Personalizado"],
+                                    key="download_type"
+                                )
+                                
+                                selected_format = None
+                                
+                                if download_type == "📹 Video + Audio":
+                                    if video_audio_formats:
+                                        format_options = [f"{fmt['description']}" for fmt in video_audio_formats]
+                                        selected_idx = st.selectbox(
+                                            "Calidad:",
+                                            range(len(format_options)),
+                                            format_func=lambda x: format_options[x],
+                                            key="video_audio_quality"
+                                        )
+                                        selected_format = video_audio_formats[selected_idx]['format_id']
+                                    else:
+                                        st.warning("No hay formatos de video+audio disponibles")
+                                
+                                elif download_type == "🎬 Solo Video":
+                                    if video_only_formats:
+                                        format_options = [f"{fmt['description']}" for fmt in video_only_formats]
+                                        selected_idx = st.selectbox(
+                                            "Calidad:",
+                                            range(len(format_options)),
+                                            format_func=lambda x: format_options[x],
+                                            key="video_only_quality"
+                                        )
+                                        selected_format = video_only_formats[selected_idx]['format_id']
+                                        st.info("⚠️ Este formato no incluye audio")
+                                    else:
+                                        st.warning("No hay formatos de solo video disponibles")
+                                
+                                elif download_type == "🎵 Solo Audio":
+                                    if audio_only_formats:
+                                        format_options = [f"{fmt['description']}" for fmt in audio_only_formats]
+                                        selected_idx = st.selectbox(
+                                            "Calidad:",
+                                            range(len(format_options)),
+                                            format_func=lambda x: format_options[x],
+                                            key="audio_only_quality"
+                                        )
+                                        selected_format = audio_only_formats[selected_idx]['format_id']
+                                    else:
+                                        st.warning("No hay formatos de solo audio disponibles")
+                                
+                                else:  # Personalizado
+                                    st.write("**Formatos disponibles:**")
+                                    
+                                    # Show all formats in expandable sections
+                                    if video_audio_formats:
+                                        with st.expander("📹 Video + Audio"):
+                                            for fmt in video_audio_formats:
+                                                st.write(f"• {fmt['description']} (ID: {fmt['format_id']})")
+                                    
+                                    if video_only_formats:
+                                        with st.expander("🎬 Solo Video"):
+                                            for fmt in video_only_formats:
+                                                st.write(f"• {fmt['description']} (ID: {fmt['format_id']})")
+                                    
+                                    if audio_only_formats:
+                                        with st.expander("🎵 Solo Audio"):
+                                            for fmt in audio_only_formats:
+                                                st.write(f"• {fmt['description']} (ID: {fmt['format_id']})")
+                                    
+                                    custom_format = st.text_input(
+                                        "ID de formato personalizado:",
+                                        placeholder="Ej: 137+140 (video+audio) o best",
+                                        key="custom_format"
+                                    )
+                                    if custom_format:
+                                        selected_format = custom_format
+                                
+                                # Download options
+                                if selected_format:
+                                    st.subheader("⚙️ Opciones adicionales")
+                                    
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        subtitle_option = st.checkbox("Descargar subtítulos", key="download_subs")
+                                        thumbnail_option = st.checkbox("Descargar miniatura", key="download_thumb")
+                                    
+                                    with col2:
+                                        if len(video_urls) > 1:
+                                            max_video_downloads = st.number_input(
+                                                "Máximo de videos a descargar:",
+                                                min_value=1,
+                                                max_value=len(video_urls),
+                                                value=min(5, len(video_urls)),
+                                                key="max_video_downloads"
+                                            )
+                                        else:
+                                            max_video_downloads = 1
+                                    
+                                    # Start download
+                                    download_button_text = f"⬇️ Descargar {len(video_urls[:max_video_downloads])} video(s)"
+                                    
+                                    if st.button(download_button_text, key="start_video_download"):
+                                        video_progress = st.progress(0)
+                                        video_status = st.empty()
+                                        
+                                        successful_video_downloads = 0
+                                        failed_video_downloads = 0
+                                        
+                                        videos_to_download = video_urls[:max_video_downloads]
+                                        
+                                        for i, video_url in enumerate(videos_to_download):
+                                            try:
+                                                video_status.text(f"Descargando video {i+1}/{len(videos_to_download)}")
+                                                
+                                                # Configure yt-dlp options
+                                                ydl_opts_video = {
+                                                    'format': selected_format,
+                                                    'outtmpl': os.path.join(download_video_path, '%(title)s.%(ext)s'),
+                                                    'quiet': True,
+                                                    'no_warnings': True,
+                                                }
+                                                
+                                                # Add subtitle options
+                                                if subtitle_option:
+                                                    ydl_opts_video.update({
+                                                        'writesubtitles': True,
+                                                        'writeautomaticsub': True,
+                                                        'subtitleslangs': ['es', 'en'],
+                                                    })
+                                                
+                                                # Add thumbnail option
+                                                if thumbnail_option:
+                                                    ydl_opts_video['writethumbnail'] = True
+                                                
+                                                # Merge video+audio if needed (for separate streams)
+                                                if '+' in selected_format or (download_type == "🎬 Solo Video" and 
+                                                    st.checkbox("Intentar combinar con audio", key=f"merge_audio_{i}")):
+                                                    ydl_opts_video['postprocessors'] = [{
+                                                        'key': 'FFmpegVideoConvertor',
+                                                        'preferedformat': 'mp4',
+                                                    }]
+                                                
+                                                with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
+                                                    ydl.download([video_url])
+                                                    successful_video_downloads += 1
+                                                
+                                            except Exception as e:
+                                                failed_video_downloads += 1
+                                                st.error(f"❌ Error descargando video {i+1}: {str(e)}")
+                                            
+                                            # Update progress
+                                            progress_video = (i + 1) / len(videos_to_download)
+                                            video_progress.progress(progress_video)
+                                        
+                                        # Show final results
+                                        video_status.text("✅ Descarga de videos completada!")
+                                        
+                                        col1, col2, col3 = st.columns(3)
+                                        col1.metric("Exitosas", successful_video_downloads)
+                                        col2.metric("Fallidas", failed_video_downloads)
+                                        col3.metric("Total", len(videos_to_download))
+                                        
+                                        st.success(f"📹 Videos descargados en: {download_video_path}")
+                    
+                    except Exception as e:
+                        st.error(f"❌ Error obteniendo información del video: {str(e)}")
+        
+        # Instructions for video download
+        with st.expander("📖 Instrucciones para descarga de videos"):
+            st.write("""
+            ### 🎯 Tipos de descarga:
+            
+            **📹 Video + Audio:** Descarga completa con video y audio sincronizados
+            - Mejor para ver videos normalmente
+            - Archivo único con todo incluido
+            
+            **🎬 Solo Video:** Descarga únicamente la pista de video
+            - Útil para análisis visual o edición
+            - No incluye audio
+            
+            **🎵 Solo Audio:** Descarga únicamente la pista de audio
+            - Similar al modo MP3 pero con más opciones de calidad
+            - Ideal para música o podcasts
+            
+            **🔧 Personalizado:** Especifica formatos manualmente
+            - Para usuarios avanzados
+            - Ejemplos: `137+140` (1080p video + audio), `best[height<=720]`
+            
+            ### 📊 Calidades comunes:
+            - **4K (2160p):** Máxima calidad, archivos grandes
+            - **1080p:** Full HD, buen balance calidad/tamaño
+            - **720p:** HD, archivos medianos
+            - **480p/360p:** Menor calidad, archivos pequeños
+            
+            ### ⚙️ Opciones adicionales:
+            - **Subtítulos:** Descarga subtítulos en español e inglés
+            - **Miniatura:** Descarga la imagen de portada del video
+            - **Descarga múltiple:** Procesa varios videos en lote
+            """)
+    
     # Instrucciones actualizadas
     with st.sidebar:
         st.header("📋 Instrucciones")
@@ -406,6 +928,24 @@ def main():
         
         3. **FFmpeg:** Necesario para MP3, opcional para audio original
         
+        ## 📋 Descarga Masiva:
+        1. **Enlaces:** Pega enlaces de YouTube (uno por línea)
+        
+        2. **Formatos aceptados:**
+           - `https://www.youtube.com/watch?v=...`
+           - `https://youtu.be/...`
+        
+        3. **Opciones:** Elige calidad y formato de nombres
+        
+        ## 📹 Descargar Video:
+        1. **Enlaces:** Individual o múltiples URLs de YouTube
+        
+        2. **Calidades:** Desde 360p hasta 4K (según disponibilidad)
+        
+        3. **Formatos:** Video+Audio, Solo Video, Solo Audio, Personalizado
+        
+        4. **Extras:** Subtítulos, miniaturas, descarga en lote
+        
         **Ejemplo JSON:**
         ```json
         [
@@ -416,6 +956,7 @@ def main():
             "youtube_link": "https://www.youtube.com/watch?v=..."
           }
         ]
+        ```
         """)
         
         st.header("🔧 Instalación FFmpeg")
@@ -436,6 +977,7 @@ def main():
         - Con FFmpeg: convierte a MP3
         - Respeta derechos de autor
         - Solo uso personal
+        - Descarga masiva: máx 20 por defecto
         """)
 
 if __name__ == "__main__":
